@@ -214,7 +214,7 @@ int main() {
         printf("LASH");
         if(u == "root") {
             printf("# ");
-        else {
+        } else {
             printf("> ");
         }
         arena_reset(&arena);
