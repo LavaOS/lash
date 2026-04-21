@@ -206,15 +206,17 @@ int main() {
     printf("Welcome to LASH! LAvaos SHell.\n");
 
     while(running) {
-        // const char* h = getenv("HOSTNAME");
-        // const char* u = getenv("USER");
+        const char* u = getenv("USER");
 
         printf("\033[36m");
         printf("%s ", cwd);
         printf("\033[0m");
-        printf("LASH-1.0");
-        printf(">");
-
+        printf("LASH");
+        if(u == "root") {
+            printf("# ");
+        else {
+            printf("> ");
+        }
         arena_reset(&arena);
         arg_count=0;
         fflush(stdout);
