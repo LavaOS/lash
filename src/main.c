@@ -29,6 +29,18 @@ typedef struct {
 static ScriptVar script_vars[MAX_SCRIPT_VARS];
 static size_t script_var_count = 0;
 
+void redirect_stdout_to_file(const char* filename) {
+    close(STDOUT_FILENO);
+    int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd != STDOUT_FILENO) {
+        // Danger!
+    }
+}
+void redirect_stdin_from_file(const char* filename) {
+    close(STDIN_FILENO);
+    open(filename, O_RDONLY);
+}
+
 intptr_t readline(char* buf, size_t bufmax) {
     intptr_t e;
     size_t n = 0;
@@ -291,49 +303,25 @@ void handle_var(char** args, size_t arg_count) {
     script_var_set(args[1], args[2]);
 }
 void run_command_with_redirection(char** args) {
-    // Check for special operators
     for (size_t i = 0; args[i]; ++i) {
         if (strcmp(args[i], ">") == 0) {
-            // Redirect stdout
             args[i] = NULL;
             const char* file = args[i + 1];
             if (file) {
-                int fd = open(file, O_WRONLY | O_CREAT | O_TRUNC);
-                if (fd >= 0) {
-                    dup2(fd, STDOUT_FILENO);
-                    close(fd);
-                }
+                close(STDOUT_FILENO);
+                open(file, O_WRONLY | O_CREAT | O_TRUNC);
             }
             run_cmd(args);
             return;
-        } else if (strcmp(args[i], "<") == 0) {
-            // Redirect stdin
+        }
+        if (strcmp(args[i], "<") == 0) {
             args[i] = NULL;
             const char* file = args[i + 1];
             if (file) {
-                int fd = open(file, O_RDONLY);
-                if (fd >= 0) {
-                    dup2(fd, STDIN_FILENO);
-                    close(fd);
-                }
+                close(STDIN_FILENO);
+                open(file, O_RDONLY);
             }
             run_cmd(args);
-            return;
-        } else if (strcmp(args[i], "|") == 0) {
-            // Pipe - simple version
-            args[i] = NULL;
-            // Fork and pipe between two commands
-            // ... pipe implementation ...
-            return;
-        } else if (strcmp(args[i], "&&") == 0) {
-            args[i] = NULL;
-            run_cmd(args);
-            if (exit_code == 0) run_cmd(&args[i + 1]);
-            return;
-        } else if (strcmp(args[i], "||") == 0) {
-            args[i] = NULL;
-            run_cmd(args);
-            if (exit_code != 0) run_cmd(&args[i + 1]);
             return;
         }
     }
