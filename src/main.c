@@ -180,6 +180,14 @@ intptr_t wait_cmd(Cmd* cmd) {
     if(e < 0) return e;
     return e > EXEC_STATUS_OFF ? -(e - EXEC_STATUS_OFF) : e; 
 }
+
+void handle_var(char** args, size_t arg_count);
+void run_command_string(Arena* arena, const char* cmd_str, char* cwd, 
+                        char** args, size_t* arg_count);
+void run_script_file(Arena* arena, const char* filename, char* cwd,
+                     char** args, size_t* arg_count);
+void run_command_with_redirection(char** args);
+
 void run_cmd(char** argv) {
     // Check built-in commands
     if (strcmp(argv[0], "VAR") == 0) {
@@ -205,7 +213,7 @@ void run_cmd(char** argv) {
         return;
     }
     if((e=wait_cmd(&cmd)) < 0) {
-        fprintf(stderr, "BAD COMMAND!\n", argv[0], status_str(e));
+        fprintf(stderr, "BAD COMMAND!\n", status_str(e));
         return;
     }
     if(e != 0) printf("%s CLOSED WITH CODE %d\n", argv[0], (int)e);
@@ -331,7 +339,8 @@ void run_command_with_redirection(char** args) {
     }
     run_cmd(args);
 }
-void parse_script_blocks(const char* filename, Arena* arena) {
+void parse_script_blocks(const char* filename, Arena* arena, 
+                         char* cwd, char** args, size_t* arg_count) {
     FILE* f = fopen(filename, "r");
     if (!f) return;
     
@@ -383,7 +392,7 @@ void parse_script_blocks(const char* filename, Arena* arena) {
     }
     fclose(f);
 }
-int main() {
+int main(int argc, char** argv) {
     Arena arena={0};
     char* linebuf = malloc(LINEBUF_MAX);
     intptr_t e = 0;
@@ -452,11 +461,7 @@ int main() {
             printf("%s ", cwd);
             printf("\033[0m");
             printf("LASH");
-            if(u == "root") {
-                printf("# ");
-            } else {
-                printf("> ");
-            }
+            printf("> ");
             arena_reset(&arena);
             arg_count=0;
             fflush(stdout);
