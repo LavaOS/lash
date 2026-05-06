@@ -199,8 +199,12 @@ void run_command_string(Arena* arena, const char* cmd_str, char* cwd,
 void run_script_file(Arena* arena, const char* filename, char* cwd,
                      char** args, size_t* arg_count);
 void run_command_with_redirection(char** args);
+void expand_variables(char** args);
 
 void run_cmd(char** argv) {
+    // Expand variables first!
+    expand_variables(argv);
+
     // Check built-in commands
     if (strcmp(argv[0], "VAR") == 0) {
         size_t count = 0;
@@ -348,6 +352,19 @@ void run_command_with_redirection(char** args) {
         }
     }
     run_cmd(args);
+}
+void expand_variables(char** args) {
+    for (int i = 0; args[i]; i++) {
+        if (args[i][0] == '$') {
+            const char* var_name = args[i] + 1;  // Skip $
+            const char* value = script_var_get(var_name);
+            if (value) {
+                args[i] = (char*)value;  // Replace with value
+            } else {
+                args[i] = "";  // Empty if not found
+            }
+        }
+    }
 }
 void parse_script_blocks(const char* filename, Arena* arena, 
                          char* cwd, char** args, size_t* arg_count) {
