@@ -262,10 +262,32 @@ void run_script_file(Arena* arena, const char* filename, char* cwd,
     
     char linebuf[1024];
     while (fgets(linebuf, sizeof(linebuf), f)) {
-        char* line = trim_r(linebuf);
-        if (line[0] == '\0' || line[0] == '#') continue;  // Skip comments and empty
+        // Remove newline
+        char* newline = strchr(linebuf, '\n');
+        if (newline) *newline = '\0';
+        if (strchr(linebuf, '\r')) *strchr(linebuf, '\r') = '\0';
         
-        run_command_string(arena, line, cwd, args, arg_count);
+        // Skip empty lines and comments
+        char* trimmed = trim_l(linebuf);
+        if (trimmed[0] == '\0' || trimmed[0] == '#') continue;
+        
+        printf("[SCRIPT] Running: %s\n", trimmed);  // Debug
+        
+        // Execute this line
+        *arg_count = 0;
+        char* line = trimmed;
+        char* cmd = strip_cmd(arena, &line);
+        args[(*arg_count)++] = cmd;
+        
+        line = trim_l(line);
+        while (line[0]) {
+            if (*arg_count == MAX_ARGS) break;
+            char* arg = strip_arg(arena, &line);
+            args[(*arg_count)++] = arg;
+            line = trim_l(line);
+        }
+        args[(*arg_count)++] = NULL;
+        run_cmd(args);
     }
     fclose(f);
 }
