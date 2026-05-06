@@ -15,6 +15,20 @@
 bool fatal_error = false;
 int exit_code = 0;
 
+typedef struct {
+    char* name;
+    char* value;
+} ScriptVar;
+typedef struct {
+    char* name;
+    char* body;  // Everything between { }
+    size_t body_len;
+} ScriptBlock;
+
+#define MAX_SCRIPT_VARS 1024
+static ScriptVar script_vars[MAX_SCRIPT_VARS];
+static size_t script_var_count = 0;
+
 intptr_t readline(char* buf, size_t bufmax) {
     intptr_t e;
     size_t n = 0;
@@ -167,12 +181,23 @@ intptr_t wait_cmd(Cmd* cmd) {
     return e > EXEC_STATUS_OFF ? -(e - EXEC_STATUS_OFF) : e; 
 }
 void run_cmd(char** argv) {
+    // Check built-in commands
+    if (strcmp(argv[0], "VAR") == 0) {
+        size_t count = 0;
+        while (argv[count]) count++;
+        handle_var(argv, count);
+        return;
+    }
+    if (strcmp(argv[0], "cd") == 0) {
+        // Handle cd (needs in-process execution)
+        const char* path = argv[1] ? argv[1] : "/";
+        if (chdir(path) < 0) {
+            fprintf(stderr, "cd: %s\n", strerror(errno));
+        }
+        return;
+    }
     Cmd cmd = { 0 };
     intptr_t e;
-    /* if ((e = spawn_cmd(&cmd, argv)) < 0) {
-        fprintf(stderr, "ERROR: FORK %s\n", status_str(e));
-        return;
-    } */
     if((e=spawn_cmd(&cmd, argv)) < 0) {
         fprintf(stderr, "ERROR: FORK %s\n", status_str(e));
         exit_code = 1;
@@ -185,6 +210,179 @@ void run_cmd(char** argv) {
     }
     if(e != 0) printf("%s CLOSED WITH CODE %d\n", argv[0], (int)e);
 }
+void run_command_string(Arena* arena, const char* cmd_str, char* cwd, 
+                        char** args, size_t* arg_count) {
+    char* line = arena_alloc(arena, strlen(cmd_str) + 1);
+    strcpy(line, cmd_str);
+    line = trim_r(line);
+    
+    if (line[0] == '\0') return;
+    
+    *arg_count = 0;
+    char* cmd = strip_cmd(arena, &line);
+    args[(*arg_count)++] = cmd;
+    
+    line = trim_l(line);
+    while (line[0]) {
+        if (*arg_count == MAX_ARGS) break;
+        char* arg = strip_arg(arena, &line);
+        args[(*arg_count)++] = arg;
+        line = trim_l(line);
+    }
+    args[(*arg_count)++] = NULL;
+    run_cmd(args);
+}
+void run_script_file(Arena* arena, const char* filename, char* cwd,
+                     char** args, size_t* arg_count) {
+    FILE* f = fopen(filename, "r");
+    if (!f) {
+        fprintf(stderr, "Cannot open script: %s\n", filename);
+        return;
+    }
+    
+    char linebuf[1024];
+    while (fgets(linebuf, sizeof(linebuf), f)) {
+        char* line = trim_r(linebuf);
+        if (line[0] == '\0' || line[0] == '#') continue;  // Skip comments and empty
+        
+        run_command_string(arena, line, cwd, args, arg_count);
+    }
+    fclose(f);
+}
+void script_var_set(const char* name, const char* value) {
+    for (size_t i = 0; i < script_var_count; ++i) {
+        if (strcmp(script_vars[i].name, name) == 0) {
+            free(script_vars[i].value);
+            script_vars[i].value = strdup(value);
+            return;
+        }
+    }
+    if (script_var_count < MAX_SCRIPT_VARS) {
+        script_vars[script_var_count].name = strdup(name);
+        script_vars[script_var_count].value = strdup(value);
+        script_var_count++;
+    }
+}
+
+// Get a variable
+const char* script_var_get(const char* name) {
+    for (size_t i = 0; i < script_var_count; ++i) {
+        if (strcmp(script_vars[i].name, name) == 0)
+            return script_vars[i].value;
+    }
+    return NULL;
+}
+
+// Parse VAR command
+void handle_var(char** args, size_t arg_count) {
+    if (arg_count < 3) {
+        fprintf(stderr, "VAR: usage: VAR <name> <value>\n");
+        return;
+    }
+    // args[1] = name, args[2+] = value (everything after name)
+    script_var_set(args[1], args[2]);
+}
+void run_command_with_redirection(char** args) {
+    // Check for special operators
+    for (size_t i = 0; args[i]; ++i) {
+        if (strcmp(args[i], ">") == 0) {
+            // Redirect stdout
+            args[i] = NULL;
+            const char* file = args[i + 1];
+            if (file) {
+                int fd = open(file, O_WRONLY | O_CREAT | O_TRUNC);
+                if (fd >= 0) {
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                }
+            }
+            run_cmd(args);
+            return;
+        } else if (strcmp(args[i], "<") == 0) {
+            // Redirect stdin
+            args[i] = NULL;
+            const char* file = args[i + 1];
+            if (file) {
+                int fd = open(file, O_RDONLY);
+                if (fd >= 0) {
+                    dup2(fd, STDIN_FILENO);
+                    close(fd);
+                }
+            }
+            run_cmd(args);
+            return;
+        } else if (strcmp(args[i], "|") == 0) {
+            // Pipe - simple version
+            args[i] = NULL;
+            // Fork and pipe between two commands
+            // ... pipe implementation ...
+            return;
+        } else if (strcmp(args[i], "&&") == 0) {
+            args[i] = NULL;
+            run_cmd(args);
+            if (exit_code == 0) run_cmd(&args[i + 1]);
+            return;
+        } else if (strcmp(args[i], "||") == 0) {
+            args[i] = NULL;
+            run_cmd(args);
+            if (exit_code != 0) run_cmd(&args[i + 1]);
+            return;
+        }
+    }
+    run_cmd(args);
+}
+void parse_script_blocks(const char* filename, Arena* arena) {
+    FILE* f = fopen(filename, "r");
+    if (!f) return;
+    
+    char linebuf[1024];
+    bool in_block = false;
+    char block_name[256];
+    char block_body[4096];
+    size_t body_len = 0;
+    
+    while (fgets(linebuf, sizeof(linebuf), f)) {
+        char* line = trim_r(linebuf);
+        if (line[0] == '#' || line[0] == '\0') continue;
+        
+        if (!in_block) {
+            // Check for block definition: name(args) {
+            char* brace = strchr(line, '{');
+            if (brace) {
+                *brace = '\0';
+                strcpy(block_name, line);
+                in_block = true;
+                body_len = 0;
+                // Everything after { on same line
+                char* after = brace + 1;
+                while (*after && *after != '}') {
+                    block_body[body_len++] = *after++;
+                }
+            } else {
+                // Regular command
+                run_command_string(arena, line, cwd, args, &arg_count);
+            }
+        } else {
+            // Inside block
+            char* close = strchr(line, '}');
+            if (close) {
+                // End of block
+                *close = '\0';
+                strcpy(block_body + body_len, line);
+                body_len += strlen(line);
+                in_block = false;
+                
+                // Execute block if it's a function
+                // Store block for later use
+            } else {
+                strcpy(block_body + body_len, line);
+                body_len += strlen(line);
+                block_body[body_len++] = '\n';
+            }
+        }
+    }
+    fclose(f);
+}
 int main() {
     Arena arena={0};
     char* linebuf = malloc(LINEBUF_MAX);
@@ -194,102 +392,139 @@ int main() {
     char* cwd = malloc(PATH_MAX);
 
     if(getcwd(cwd, PATH_MAX) == NULL) {
-        fprintf(stderr, "ERROR: FAILED TO GETCWD ON INITIAL GETCWD: %s\n", strerror(errno));
-        free(args);
-        free(cwd);
-        free(linebuf);
+        fprintf(stderr, "ERROR: FAILED TO GETCWD\n");
+        free(args); free(cwd); free(linebuf);
         return 1;
     }
+    
     size_t arg_count=0;
     bool running = true;
+    bool interactive = true;
+    const char* script_file = NULL;
+    const char* command_str = NULL;
 
-    printf("Welcome to LASH! LAvaos SHell.\n");
-
-    while(running) {
-        const char* u = getenv("USER");
-
-        printf("\033[36m");
-        printf("%s ", cwd);
-        printf("\033[0m");
-        printf("LASH");
-        if(u == "root") {
-            printf("# ");
-        } else {
-            printf("> ");
-        }
-        arena_reset(&arena);
-        arg_count=0;
-        fflush(stdout);
-        /* if((e=readline(linebuf, LINEBUF_MAX-1)) < 0) {
-            printf("FAILED TO READ ON STDIN: %s\n", status_str(e));
-            return 1;
-        } */
-        if((e=readline(linebuf, LINEBUF_MAX-1)) < 0) {
-            fprintf(stderr, "FAILED TO READ ON STDIN: %s\n", status_str(e));
-            exit_code = 1;
-            fatal_error = true;
-            break;
-        }
-
-        if (fatal_error)
-            break;
-
-        linebuf[e] = 0;
-        char* line = trim_r(linebuf);
-        // Empty
-        if(line[0] == '\0') continue;
-        char* cmd = strip_cmd(&arena, &line);
-        args[arg_count++] = cmd;
-        while((line=trim_l(line))[0]) {
-            if(arg_count == MAX_ARGS) {
-                printf("TOO MANY ARGUMENTS\n");
-                continue;
+    // Parse shell arguments
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--command") == 0) {
+            if (i + 1 < argc) {
+                // Take everything after -c as the command
+                command_str = argv[i + 1];
+                // Rest of args are for the command
+                // Build command line from remaining args
+                size_t cmd_len = strlen(argv[i + 1]);
+                for (int j = i + 2; j < argc; ++j) {
+                    cmd_len += strlen(argv[j]) + 1;
+                }
+                char* full_cmd = malloc(cmd_len + 1);
+                strcpy(full_cmd, argv[i + 1]);
+                for (int j = i + 2; j < argc; ++j) {
+                    strcat(full_cmd, " ");
+                    strcat(full_cmd, argv[j]);
+                }
+                command_str = full_cmd;
+                interactive = false;
+                break;
             }
-            char* arg = strip_arg(&arena, &line);
-            args[arg_count++] = arg;
+        } else if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--script") == 0) {
+            if (i + 1 < argc) {
+                script_file = argv[i + 1];
+                interactive = false;
+                break;
+            }
         }
-        if(strcmp(cmd, "exit") == 0) {
-            running = false;
-            if (arg_count == 1) exit_code=0;
-            else if (arg_count == 2) {
-                char* end;
-                exit_code = strtoll(args[1], &end, 10);
-                if(end[0] != '\0') {
-                    fprintf(stderr, "INVALID EXIT CODE `%s`\n", args[1]);
-                    exit_code = 1;
+    }
+
+    if (!interactive) {
+        if (command_str) {
+            // Execute single command
+            run_command_string(&arena, command_str, cwd, args, &arg_count);
+        } else if (script_file) {
+            // Execute script file
+            run_script_file(&arena, script_file, cwd, args, &arg_count);
+        }
+    } else {
+        // Interactive mode
+        printf("Welcome to LASH! LAvaos SHell.\n");
+        while(running) {
+            const char* u = getenv("USER");
+
+            printf("\033[36m");
+            printf("%s ", cwd);
+            printf("\033[0m");
+            printf("LASH");
+            if(u == "root") {
+                printf("# ");
+            } else {
+                printf("> ");
+            }
+            arena_reset(&arena);
+            arg_count=0;
+            fflush(stdout);
+            if((e=readline(linebuf, LINEBUF_MAX-1)) < 0) {
+                fprintf(stderr, "FAILED TO READ ON STDIN: %s\n", status_str(e));
+                exit_code = 1;
+                fatal_error = true;
+                break;
+            }
+
+            if (fatal_error)
+                break;
+
+            linebuf[e] = 0;
+            char* line = trim_r(linebuf);
+            // Empty
+            if(line[0] == '\0') continue;
+            char* cmd = strip_cmd(&arena, &line);
+            args[arg_count++] = cmd;
+            while((line=trim_l(line))[0]) {
+                if(arg_count == MAX_ARGS) {
+                    printf("TOO MANY ARGUMENTS\n");
                     continue;
                 }
+                char* arg = strip_arg(&arena, &line);
+                args[arg_count++] = arg;
+            }
+            if(strcmp(cmd, "exit") == 0) {
+                running = false;
+                if (arg_count == 1) exit_code=0;
+                else if (arg_count == 2) {
+                    char* end;
+                    exit_code = strtoll(args[1], &end, 10);
+                    if(end[0] != '\0') {
+                        fprintf(stderr, "INVALID EXIT CODE `%s`\n", args[1]);
+                        exit_code = 1;
+                        continue;
+                    }
+                } else {
+                    fprintf(stderr, "EXIT: TOO MANY ARGUMENTS\n");
+                    continue;
+                }
+            } else if (strcmp(cmd, "reset") == 0) {
+                tty_set_flags(fileno(stdin), TTY_ECHO);
+            } else if (strcmp(cmd, "cd") == 0) {
+                const char* path = (arg_count < 2) ? "/" : args[1];
+
+                if (arg_count > 2) {
+                    fprintf(stderr, "CD: TOO MANY ARGUMENTS\n");
+                    continue;
+                }
+
+                if((e = chdir(path)) < 0) {
+                    fprintf(stderr, "FAILED TO CD INTO `%s`: %s\n", path, status_str(e));
+                    continue;
+                }
+
+                if(getcwd(cwd, PATH_MAX) == NULL) {
+                    fprintf(stderr, "FAILED TO GETCWD: %s\n", strerror(errno));
+                    exit(1);
+                }
             } else {
-                fprintf(stderr, "EXIT: TOO MANY ARGUMENTS\n");
-                continue;
+                args[arg_count++] = NULL;
+                run_cmd(args);
             }
-        } else if (strcmp(cmd, "reset") == 0) {
-            tty_set_flags(fileno(stdin), TTY_ECHO);
-        } else if (strcmp(cmd, "cd") == 0) {
-            const char* path = (arg_count < 2) ? "/" : args[1];
-
-            if (arg_count > 2) {
-                fprintf(stderr, "CD: TOO MANY ARGUMENTS\n");
-                continue;
-            }
-
-            if((e = chdir(path)) < 0) {
-                fprintf(stderr, "FAILED TO CD INTO `%s`: %s\n", path, status_str(e));
-                continue;
-            }
-
-            if(getcwd(cwd, PATH_MAX) == NULL) {
-                fprintf(stderr, "FAILED TO GETCWD: %s\n", strerror(errno));
-                exit(1);
-            }
-        } else {
-            args[arg_count++] = NULL;
-            run_cmd(args);
         }
     }
     arena_drop(&arena);
-    free(args);
-    free(cwd);
-    free(linebuf);
+    free(args); free(cwd); free(linebuf);
     return exit_code;
 }
