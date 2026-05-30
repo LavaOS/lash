@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <readline.h>
 
 bool fatal_error = false;
 int exit_code = 0;
@@ -41,19 +42,6 @@ void redirect_stdin_from_file(const char* filename) {
     open(filename, O_RDONLY);
 }
 
-intptr_t readline(char* buf, size_t bufmax) {
-    intptr_t e;
-    size_t n = 0;
-    while(n < bufmax) {
-        e = read(STDIN_FILENO, buf + n, bufmax - n);
-        if(e < 0) return e;
-        assert(e != 0);
-        n += e;
-        if(buf[n-1] == '\n') break;
-    }
-    if(n >= bufmax) return -BUFFER_TOO_SMALL;
-    return n;
-}
 char* trim_r(char* buf) {
     char* start = buf;
     while(*buf) buf++;
