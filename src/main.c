@@ -468,7 +468,6 @@ int main(int argc, char** argv) {
         }
     } else {
         // Interactive mode
-        printf("Welcome to LASH! LAvaos SHell.\n");
         while(running) {
             const char* u = getenv("USER");
 
@@ -519,8 +518,6 @@ int main(int argc, char** argv) {
                     fprintf(stderr, "EXIT: TOO MANY ARGUMENTS\n");
                     continue;
                 }
-            } else if (strcmp(cmd, "reset") == 0) {
-                tty_set_flags(fileno(stdin), TTY_ECHO);
             } else if (strcmp(cmd, "cd") == 0) {
                 const char* path = (arg_count < 2) ? "/" : args[1];
 
